@@ -3,7 +3,7 @@ This is the official firmware repository for Team LEO PSAT.
 ## Installation
 1. Install PlatformIO Extension on VSCode
 ```bash
-git pull origin
+git pull
 ```
 3. Connect Device to USB
 4. Build Code
