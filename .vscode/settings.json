@@ -1,0 +1,7 @@
+{
+    "files.associations": {
+        "string.h": "c",
+        "uart.h": "c",
+        "esp_err.h": "c"
+    }
+}
