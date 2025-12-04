@@ -17,6 +17,11 @@
 #define GPS_RX_PIN 4  // ESP32 RX ← GPS TX
 #define BUF_SIZE 1024
 
+// LORA UART
+#define LORA_UART_NUM UART_NUM_0
+#define LORA_TX_PIN 17 // ESP32 TX -> LORA RX
+#define LORA_RX_PIN 16 // ESP32 RX -> LORA TX
+
 // Helper: convert NMEA lat/lon to decimal degrees
 double nmea_to_decimal(const char *nmea, char direction) {
     // Convert String to Float
@@ -48,6 +53,18 @@ void app_main(void) {
 
     // Install UART driver
     uart_driver_install(GPS_UART_NUM, BUF_SIZE * 2, 0, 0, NULL, 0);
+
+    // LoRa UART Config
+    uart_config_t lora_uart_config = {
+        .baud_rate = 9600,  // adjust to your LoRa module
+        .data_bits = UART_DATA_8_BITS,
+        .parity    = UART_PARITY_DISABLE,
+        .stop_bits = UART_STOP_BITS_1,
+        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE
+    };
+    uart_param_config(LORA_UART_NUM, &lora_uart_config);
+    uart_set_pin(LORA_UART_NUM, LORA_TX_PIN, LORA_RX_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+    uart_driver_install(LORA_UART_NUM, 2048, 0, 0, NULL, 0);
 
     // Send configuration commands to GPS
     const char *set_rate = "$PMTK220,200*2C\r\n"; // 5 Hz
@@ -99,6 +116,11 @@ void app_main(void) {
                             double latitude = nmea_to_decimal(lat_str, lat_dir[0]);
                             double longitude = nmea_to_decimal(lon_str, lon_dir[0]);
                             printf("Latitude: %.6f, Longitude: %.6f\n", latitude, longitude);
+                            
+                            // Transmit Message to LoRa module
+                            char message[64];
+                            snprintf(message, sizeof(message), "%.6f,%.6f\n", latitude, longitude);
+                            uart_write_bytes(LORA_UART_NUM, message, strlen(message));
                         }
                     }
 
