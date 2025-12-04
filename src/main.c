@@ -4,61 +4,45 @@
 //
 // If Raw NMEA Data, is needed, uncomment line 71.
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "driver/uart.h"
-#include "driver/gpio.h"
-#include "esp_err.h"
+#include "esp_log.h"
 
-// Define which UART ports to use
-// #define GPS_UART_NUM UART_NUM_1
-// #define GPS_TX_PIN 5  // ESP32 TX → GPS RX
-// #define GPS_RX_PIN 4  // ESP32 RX ← GPS TX
-#define BUF_SIZE 1024
-
-// Define LoRa UART
-#define LORA_UART_NUM UART_NUM_1
-#define LORA_TX_PIN 23 // ESP32 TX -> LORA RX
-#define LORA_RX_PIN 22 // ESP32 RX -> LORA TX
-
-// Helper: convert NMEA lat/lon to decimal degrees
-double nmea_to_decimal(const char *nmea, char direction) {
-    // Convert String to Float
-    double val = atof(nmea);
-    // Seperate degrees
-    int degrees = (int)(val / 100);
-    // Seperate minutes
-    double minutes = val - (degrees * 100);
-    // Convert to decimal
-    double decimal = degrees + minutes / 60.0;
-    // If direction is South or West, then apply negative
-    if(direction == 'S' || direction == 'W') decimal = -decimal;
-    return decimal;
-}
+#define LORA_UART_NUM    UART_NUM_1
+#define LORA_TX_PIN      5   // ESP32 TX -> LoRa RX
+#define LORA_RX_PIN      4   // ESP32 RX <- LoRa TX
+#define BUF_SIZE         2048
 
 void app_main(void) {
-
-    // Configure LoRa UART parameters
-    uart_config_t lora_uart_config = {
-        .baud_rate = 115200,  // adjust to your LoRa module
+    // UART config
+    const uart_config_t uart_config = {
+        .baud_rate = 115200,
         .data_bits = UART_DATA_8_BITS,
         .parity    = UART_PARITY_DISABLE,
         .stop_bits = UART_STOP_BITS_1,
         .flow_ctrl = UART_HW_FLOWCTRL_DISABLE
     };
-    uart_param_config(LORA_UART_NUM, &lora_uart_config); // Set UART pins
-    uart_set_pin(LORA_UART_NUM, LORA_TX_PIN, LORA_RX_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE); // Install UART drivers
-    uart_driver_install(LORA_UART_NUM, 2048, 0, 0, NULL, 0); // UART PORT NUM, RX buffer size, TX buffer size, queue size, queue handle, interrupt flags
+    ESP_ERROR_CHECK(uart_param_config(LORA_UART_NUM, &uart_config));
+    ESP_ERROR_CHECK(uart_set_pin(LORA_UART_NUM, LORA_TX_PIN, LORA_RX_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
+    // give TX buffer non-zero so driver can buffer async TX
+    ESP_ERROR_CHECK(uart_driver_install(LORA_UART_NUM, BUF_SIZE, BUF_SIZE, 10, NULL, 0));
 
-
-    // Sending data to LoRa module example
-
-    while (1){
-        uart_write_bytes(LORA_UART_NUM, "HELLO", 5);
-        printf("attemping to send HELLO to LoRa module\n");
-        vTaskDelay(1000 / portTICK_PERIOD_MS); // Delay 1 second
+    const char *msg = "HELLO\r\n"; // add \r\n if module expects terminator
+    while (1) {
+        int written = uart_write_bytes(LORA_UART_NUM, msg, strlen(msg));
+        if (written < 0) {
+            ESP_LOGE("LORA", "uart_write_bytes returned %d", written);
+        } else if (written != (int)strlen(msg)) {
+            ESP_LOGW("LORA", "partial write %d/%d", written, (int)strlen(msg));
+        } else {
+            ESP_LOGI("LORA", "Sent %d bytes", written);
+        }
+        // wait until hardware has sent all bytes (optional)
+        uart_wait_tx_done(LORA_UART_NUM, pdMS_TO_TICKS(200));
+        vTaskDelay(pdMS_TO_TICKS(1000));
     }
+
     
 
 
