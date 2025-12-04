@@ -17,7 +17,7 @@
 #define GPS_RX_PIN 4  // ESP32 RX ← GPS TX
 #define BUF_SIZE 1024
 
-// LORA UART
+// Define LoRa UART
 #define LORA_UART_NUM UART_NUM_0
 #define LORA_TX_PIN 17 // ESP32 TX -> LORA RX
 #define LORA_RX_PIN 16 // ESP32 RX -> LORA TX
@@ -38,7 +38,7 @@ double nmea_to_decimal(const char *nmea, char direction) {
 }
 
 void app_main(void) {
-    // Configure UART parameters
+    // Configure ESP32 UART parameters
     uart_config_t uart_config = {
         .baud_rate = 9600,
         .data_bits = UART_DATA_8_BITS,
@@ -54,7 +54,7 @@ void app_main(void) {
     // Install UART driver
     uart_driver_install(GPS_UART_NUM, BUF_SIZE * 2, 0, 0, NULL, 0);
 
-    // LoRa UART Config
+    // Configure LoRa UART parameters
     uart_config_t lora_uart_config = {
         .baud_rate = 9600,  // adjust to your LoRa module
         .data_bits = UART_DATA_8_BITS,
