@@ -18,8 +18,8 @@ static const char *TAG = "lora-probe";
 
 // Define which UART GPS ports to use
 #define GPS_UART_NUM UART_NUM_0
-#define GPS_TX_PIN 13 // ESP32 TX → GPS RX
-#define GPS_RX_PIN 12  // ESP32 RX ← GPS TX
+#define GPS_TX_PIN 23 // ESP32 TX → GPS RX
+#define GPS_RX_PIN 22  // ESP32 RX ← GPS TX
 #define BUF_SIZE 1024
 
 /* --- User configurable pins / settings --- */
@@ -53,15 +53,15 @@ double nmea_to_decimal(const char *nmea, char direction) {
     return decimal;
 }
 
-void gps_setup(uart_config_t uart_config){
-    /* uart_config_t uart_config = {
-        .baud_rate = 9600,
+void gps_setup(){
+    uart_config_t uart_config_gps = {
+        .baud_rate = 115200,
         .data_bits = UART_DATA_8_BITS,
         .parity    = UART_PARITY_DISABLE,
         .stop_bits = UART_STOP_BITS_1,
         .flow_ctrl = UART_HW_FLOWCTRL_DISABLE
-    }; */
-    uart_param_config(GPS_UART_NUM, &uart_config);
+    };
+    uart_param_config(GPS_UART_NUM, &uart_config_gps);
 
     // Set UART pins
     uart_set_pin(GPS_UART_NUM, GPS_TX_PIN, GPS_RX_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
@@ -78,45 +78,34 @@ void gps_setup(uart_config_t uart_config){
 }
 
 const char* read_gps(bool nmea_on){
-    
-    uint8_t data[BUF_SIZE]; // Ray Bytes from UART
-    char line[BUF_SIZE]; // One line of NMEA Data
-    int line_pos = 0; // Current position
-    static char locationStr[64]; // String to be outputted
-    
-    // Every 100ms read data up to length of BUF_SIZE
-    int len = uart_read_bytes(GPS_UART_NUM, data, BUF_SIZE, 100 / portTICK_PERIOD_MS);
-    
-    // If Data exists
+    static char locationStr[64]; // Always return this
+    uint8_t data[BUF_SIZE];
+    static char line[BUF_SIZE];  // Keep across calls
+    static int line_pos = 0;
+
+    int len = uart_read_bytes(GPS_UART_NUM, data, BUF_SIZE, 10 / portTICK_PERIOD_MS);
+
     if(len > 0) {
-        // Process
         for(int i = 0; i < len; i++) {
             char c = data[i];
             if(c == '\n') {
-                line[line_pos] = '\0'; // End of sentence
+                line[line_pos] = '\0';
                 line_pos = 0;
 
-                // Check if this is a GNRMC sentence
                 if(strncmp(line, "$GNRMC", 6) == 0 || strncmp(line, "$GPRMC", 6) == 0) {
-                    // Tokenize the sentence
                     char *token = strtok(line, ",");
                     int field = 0;
-                    char *lat_str = NULL;
-                    char *lat_dir = NULL;
-                    char *lon_str = NULL;
-                    char *lon_dir = NULL;
+                    char *lat_str = NULL, *lat_dir = NULL, *lon_str = NULL, *lon_dir = NULL;
 
-                    // Read through and process data from NMEA field
                     while(token) {
                         field++;
-                        if(field == 4) lat_str = token;   // latitude
-                        if(field == 5) lat_dir = token;   // N/S
-                        if(field == 6) lon_str = token;   // longitude
-                        if(field == 7) lon_dir = token;   // E/W
+                        if(field == 4) lat_str = token;
+                        if(field == 5) lat_dir = token;
+                        if(field == 6) lon_str = token;
+                        if(field == 7) lon_dir = token;
                         token = strtok(NULL, ",");
                     }
-                    
-                    // Print Latitude and Longitude
+
                     if(lat_str && lat_dir && lon_str && lon_dir) {
                         double latitude = nmea_to_decimal(lat_str, lat_dir[0]);
                         double longitude = nmea_to_decimal(lon_str, lon_dir[0]);
@@ -124,15 +113,20 @@ const char* read_gps(bool nmea_on){
                         return locationStr;
                     }
                 }
-
             } else if(c != '\r') {
                 line[line_pos++] = c;
-                if(line_pos >= BUF_SIZE - 1) line_pos = BUF_SIZE - 2; // prevent overflow
+                if(line_pos >= BUF_SIZE - 1) line_pos = BUF_SIZE - 2;
             }
         }
     }
-    return "No such data\r\n";
+
+    // If nothing new, return last valid locationStr or a placeholder
+    if(locationStr[0] == '\0') {
+        strcpy(locationStr, "No GPS fix yet\r\n");
+    }
+    return locationStr;
 }
+
 
 /* --- Sends a sample packet periodically to LoRa --- */
 static void periodic_sender_task(void *arg)
@@ -145,11 +139,17 @@ static void periodic_sender_task(void *arg)
         // GPS Data as payload.
         // If NMEA data is needed, make true
         const char *payload = read_gps(false);
-        int len = strlen(payload);
+        //const char *payload = "Hello\r\n";
+        // const char *payload = read_gps(false);
+        if(payload) {
+            uart_write_bytes(LORA_UART_NUM, payload, strlen(payload));
+        }
+
+        // int len = strlen(payload);
 
         // Queue bytes to UART FIFO
-        int written = uart_write_bytes(LORA_UART_NUM, payload, len);
-        ESP_LOGI(TAG, "Periodic: sent %d bytes to LoRa", written);
+        // int written = uart_write_bytes(LORA_UART_NUM, payload, len);
+        // ESP_LOGI(TAG, "Periodic: sent %d bytes to LoRa", written);
 
         // Wait until all bytes are physically transmitted
         esp_err_t err = uart_wait_tx_done(LORA_UART_NUM, pdMS_TO_TICKS(500));
@@ -162,8 +162,6 @@ static void periodic_sender_task(void *arg)
         vTaskDelay(pdMS_TO_TICKS(1000)); // 1 second delay
     }
 }
-
-
 
 static void lora_probe_task(void *arg)
 {
@@ -227,8 +225,9 @@ void app_main(void)
         .source_clk = UART_SCLK_DEFAULT,
     };
 
+    esp_log_level_set("*", ESP_LOG_NONE);
     // Set up GPS Configs
-    gps_setup(uart_config);
+    gps_setup();
 
     // Install driver for LORA_UART_NUM: RX + TX buffers
     ESP_ERROR_CHECK(uart_driver_install(LORA_UART_NUM, LORA_UART_BUF_SIZE * 2, 0, 0, NULL, 0));
