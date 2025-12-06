@@ -127,8 +127,10 @@ const char* read_gps(){
                         if(field == 7) lon_dir = token; // W/E Indicator
                         token = strtok(NULL, ",");
                     }
-
+                    
+                    // If Latitude, and longitude data exists
                     if(lat_str && lat_dir && lon_str && lon_dir) {
+                        // Convert to readable double
                         double latitude = nmea_to_decimal(lat_str, lat_dir[0]);
                         double longitude = nmea_to_decimal(lon_str, lon_dir[0]);
                         
