@@ -17,14 +17,14 @@
 static const char *TAG = "lora-probe";
 
 // Define which UART GPS ports to use
-#define GPS_UART_NUM UART_NUM_0
+#define GPS_UART_NUM UART_NUM_1
 #define GPS_TX_PIN 23 // ESP32 TX → GPS RX
 #define GPS_RX_PIN 22  // ESP32 RX ← GPS TX
 #define BUF_SIZE 1024
 
 /* --- User configurable pins / settings --- */
 /* Set these to match your wiring */
-#define LORA_UART_NUM           UART_NUM_1   // UART used to talk to LoRa module
+#define LORA_UART_NUM           UART_NUM_0   // UART used to talk to LoRa module
 #define LORA_UART_TX_PIN        5            // ESP TX -> LoRa RX
 #define LORA_UART_RX_PIN        4            // ESP RX <- LoRa TX (optional)
 #define LORA_UART_RTS_PIN       UART_PIN_NO_CHANGE
@@ -55,7 +55,7 @@ double nmea_to_decimal(const char *nmea, char direction) {
 
 void gps_setup(){
     uart_config_t uart_config_gps = {
-        .baud_rate = 115200,
+        .baud_rate = 9600,
         .data_bits = UART_DATA_8_BITS,
         .parity    = UART_PARITY_DISABLE,
         .stop_bits = UART_STOP_BITS_1,
@@ -63,35 +63,43 @@ void gps_setup(){
     };
     uart_param_config(GPS_UART_NUM, &uart_config_gps);
 
+    // Install UART driver
+    uart_driver_install(GPS_UART_NUM, BUF_SIZE * 2, 0, 0, NULL, 0); 
+
     // Set UART pins
     uart_set_pin(GPS_UART_NUM, GPS_TX_PIN, GPS_RX_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
-
-    // Install UART driver
-    uart_driver_install(GPS_UART_NUM, BUF_SIZE * 2, 0, 0, NULL, 0);
 
     // Send configuration commands to GPS
     const char *set_rate = "$PMTK220,200*2C\r\n"; // 5 Hz
     uart_write_bytes(GPS_UART_NUM, set_rate, strlen(set_rate));
 
-    const char *set_sentences = "$PMTK314,0,1,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0*28\r\n";
+    const char *set_sentences = "$PMTK314,0,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0*29\r\n"; 
     uart_write_bytes(GPS_UART_NUM, set_sentences, strlen(set_sentences));
 }
 
 const char* read_gps(bool nmea_on){
-    static char locationStr[64]; // Always return this
-    uint8_t data[BUF_SIZE];
-    static char line[BUF_SIZE];  // Keep across calls
+    static char locationStr[64] = "No GPS fix yet\r\n"; 
+    static char line[BUF_SIZE];
     static int line_pos = 0;
+    static int satellites_in_use = 0; // <--- NEW: Store satellite count
+    uint8_t data[BUF_SIZE];
 
-    int len = uart_read_bytes(GPS_UART_NUM, data, BUF_SIZE, 10 / portTICK_PERIOD_MS);
+    int len = uart_read_bytes(GPS_UART_NUM, data, BUF_SIZE, 500 / portTICK_PERIOD_MS);
 
     if(len > 0) {
         for(int i = 0; i < len; i++) {
             char c = data[i];
             if(c == '\n') {
                 line[line_pos] = '\0';
+                
+                // Trim trailing \r (using the previous fix logic)
+                if (line_pos > 0 && line[line_pos - 1] == '\r') {
+                    line[line_pos - 1] = '\0';
+                }
+                
                 line_pos = 0;
 
+                // --- GNRMC/GPRMC Parsing (Existing Location Logic) ---
                 if(strncmp(line, "$GNRMC", 6) == 0 || strncmp(line, "$GPRMC", 6) == 0) {
                     char *token = strtok(line, ",");
                     int field = 0;
@@ -109,10 +117,37 @@ const char* read_gps(bool nmea_on){
                     if(lat_str && lat_dir && lon_str && lon_dir) {
                         double latitude = nmea_to_decimal(lat_str, lat_dir[0]);
                         double longitude = nmea_to_decimal(lon_str, lon_dir[0]);
-                        snprintf(locationStr, sizeof(locationStr), "Latitude: %.6f, Longitude: %.6f\r\n", latitude, longitude);
-                        return locationStr;
+                        
+                        // UPDATE locationStr to include the latest satellite count
+                        snprintf(locationStr, sizeof(locationStr), 
+                                 "Lat: %.6f, Lon: %.6f, Sats: %d\r\n", 
+                                 latitude, longitude, satellites_in_use); // <--- CHANGE HERE
                     }
                 }
+                
+                // --- NEW: GNGGA/GPGGA Parsing for Satellites ---
+                else if(strncmp(line, "$GNGGA", 6) == 0 || strncmp(line, "$GPGGA", 6) == 0) {
+                    char temp_line[BUF_SIZE];
+                    strncpy(temp_line, line, BUF_SIZE); // Use copy for strtok
+                    
+                    char *token = strtok(temp_line, ",");
+                    int field = 0;
+                    char *sat_count_str = NULL;
+
+                    while(token) {
+                        field++;
+                        // Field 8 of GGA is the number of satellites in use
+                        if(field == 8) sat_count_str = token; 
+                        token = strtok(NULL, ",");
+                    }
+
+                    if(sat_count_str && *sat_count_str != '\0') {
+                        satellites_in_use = atoi(sat_count_str); // <--- Store satellite count
+                    }
+                }
+                // --- END NEW Parsing ---
+                
+
             } else if(c != '\r') {
                 line[line_pos++] = c;
                 if(line_pos >= BUF_SIZE - 1) line_pos = BUF_SIZE - 2;
@@ -120,12 +155,9 @@ const char* read_gps(bool nmea_on){
         }
     }
 
-    // If nothing new, return last valid locationStr or a placeholder
-    if(locationStr[0] == '\0') {
-        strcpy(locationStr, "No GPS fix yet\r\n");
-    }
     return locationStr;
 }
+
 
 
 /* --- Sends a sample packet periodically to LoRa --- */
