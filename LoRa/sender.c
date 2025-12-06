@@ -253,23 +253,29 @@ int app_start( void )
         case UART_TO_RADIO:
             if (uartDataLen > 0)
             {
+                // Copy UART data to the radio transmit buffer
                 BufferSize = uartDataLen;
-                if (BufferSize > BUFFER_SIZE) BufferSize = BUFFER_SIZE;
+                if (BufferSize > BUFFER_SIZE) BufferSize = BUFFER_SIZE; // Payload size cap
 
                 memcpy(Buffer, uartBuffer, BufferSize);
 
-                // Clear UART buffer AFTER copying
+                // Clear UART state for the next message
                 memset(uartBuffer, 0, UART_RX_BUFFER_SIZE);
                 uartDataLen = 0;
 
+                // Stop current radio operations
                 Radio.Sleep();
+
+                // Transmit the payload
                 Radio.Send(Buffer, BufferSize);
 
                 printf("LoRa TX (%d bytes): ", BufferSize);
+                // Print payload in hex
                 for (int i = 0; i < BufferSize; i++) printf("%02X ", Buffer[i]);
                 printf("\r\n");
             }
 
+            // Return to low power state after sending
             State = LOWPOWER;
             break;
 
@@ -280,50 +286,70 @@ int app_start( void )
             break;
         case RX_TIMEOUT:
         case RX_ERROR:
-             /* just resume listening, do not auto-send PING */
+             /* RX timed out or failed CRC check; immediately resume listening */
             Radio.Rx( RX_TIMEOUT_VALUE );
             State = LOWPOWER;
             break;
         case TX_TIMEOUT:
+            /* TX failed to complete; immediately resume listening */
             Radio.Rx( RX_TIMEOUT_VALUE );
             State = LOWPOWER;
             break;
         case LOWPOWER:
         default:
-            // Set low power
+            // idle state
             break;
         }
 
-        // Process Radio IRQ
+        // Process radio interrupts.
+        // Interrupts are then process in the main loop
         Radio.IrqProcess( );
     }
 }
 
-/* Radio callbacks unchanged except they set state and copy payload */
+/* --- Radio callback implementations ---*/
+
+/**
+ * @brief Function called when a transmission completes successfully
+ */
 void OnTxDone( void )
 {
     Radio.Sleep( );
     State = TX;
 }
 
+/**
+ * @brief Function called when a valid LoRa packet is received
+ */
 void OnRxDone( uint8_t *payload, uint16_t size, int16_t rssi, int8_t snr )
 {
-    Radio.Sleep( );
+    Radio.Sleep( ); // Stop radio check
+
+    // Copy payload date
     BufferSize = size;
     if(BufferSize > BUFFER_SIZE) BufferSize = BUFFER_SIZE;
     memset(Buffer, 0, BUFFER_SIZE);
     memcpy( Buffer, payload, BufferSize );
+    
+    // Record signal quality
     RssiValue = rssi;
     SnrValue = snr;
-    State = RX;
+
+    State = RX; // Set state for main loop to process received data
 }
 
+/**
+ * @brief Function called when a transmission times out
+ */
 void OnTxTimeout( void )
 {
     Radio.Sleep( );
     State = TX_TIMEOUT;
 }
 
+/**
+ * @brief Function called when reception times out
+ */
 void OnRxTimeout( void )
 {
     printf("OnRxTimeout\r\n");
@@ -331,32 +357,47 @@ void OnRxTimeout( void )
     State = RX_TIMEOUT;
 }
 
+/**
+ * @brief Function called if an RX error (e.g. CRC fail) occurs
+ */
 void OnRxError( void )
 {
     Radio.Sleep( );
     State = RX_ERROR;
 }   
 
-/* Read bytes from UART into uartBuffer and set State to UART_TO_RADIO
-   This function will only set uartDataLen as number of bytes read.
+
+// --- UART handling ---
+
+/*
+What the below code does is that it pretty much just stores bytes in a temporary buffer, msgBuffer, to 
+prevent incorrect messages from being sent.
+We check we get a full message if we receive a '\n' byte indicating "end-of-message".
+This prevents the previous error of incomplete bytes being transmitted happening.
 */
 #define UART_MSG_BUFFER_SIZE 255
-static uint8_t msgBuffer[UART_MSG_BUFFER_SIZE];
-static uint16_t msgLen = 0;
+static uint8_t msgBuffer[UART_MSG_BUFFER_SIZE]; // Temporary buffer for accumulating partial UART messages
+static uint16_t msgLen = 0;                     // Acts as both the index for next byte and current length of the partial message
 
+/**
+ * @brief Non-blocking function to read bytes from UART and check for a complete message
+ * * Data is accumulated until a newline ('\n') is received, triggering the radio send.
+ */
 void ReadFromUART(void) {
+    // Check RX FIFO until empty
     while (uart_get_flag_status(UART0, UART_FLAG_RX_FIFO_EMPTY) == RESET) {
         uint8_t byte = uart_receive_data(UART0);
 
+        // Buffer overflow check prevents writing past end of msgBuffer
         if (msgLen < UART_MSG_BUFFER_SIZE) {
             msgBuffer[msgLen++] = byte;
         }
 
         if (byte == '\n') { // full message
-            memcpy(uartBuffer, msgBuffer, msgLen); // copy to TX buffer
-            uartDataLen = msgLen;
-            msgLen = 0;
-            State = UART_TO_RADIO;
+            memcpy(uartBuffer, msgBuffer, msgLen);      // Copy to the global TX buffer
+            uartDataLen = msgLen;                       // Store the length
+            msgLen = 0;                                 // Reset accumulation buffer
+            State = UART_TO_RADIO;                      // Set state to trigger transmission in same loop
         }
     }
 }

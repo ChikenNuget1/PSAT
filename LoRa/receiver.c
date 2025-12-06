@@ -108,7 +108,9 @@ int app_start(void) {
 
     while(1) {
         // process radio interrupts
-        // If an event has occured, flag the correct event handler
+        // This function handles an interrupt request from the LoRa module.
+        // An interrupt request, is a request that tells the chip that something needs attention.
+        // This function pauses current tasks to service the radio's signal.
         Radio.IrqProcess();
 
         // Check flag set by event handler
