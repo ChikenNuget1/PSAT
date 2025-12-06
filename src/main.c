@@ -244,5 +244,5 @@ void app_main(void)
     ESP_LOGI(TAG, "Wiring reminder: ESP TX -> LoRa RX, ESP RX -> LoRa TX, common GND");
 
       /* --- Start periodic sender task --- */
-      xTaskCreate(periodic_sender_task, "lora-probe", 4096, NULL, 5, NULL);
+      xTaskCreate(periodic_sender_task, "lora", 4096, NULL, 5, NULL);
 }
