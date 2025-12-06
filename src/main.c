@@ -1,7 +1,7 @@
 /* ESP-IDF example: forward console input to LoRa module over UART
    Targets ESP32-C6 (APIs same as other ESP32 chips).
-   - Uses UART_NUM_1 for the LoRa connection.
-   - Uses UART_NUM_0 as the console (default).
+   - Uses UART_NUM_1 for the GPS connection.
+   - Uses UART_NUM_0 for the LoRa connection.
 */
 
 #include "freertos/FreeRTOS.h"
@@ -16,14 +16,13 @@
 
 static const char *TAG = "lora-probe";
 
-// Define which UART GPS ports to use
+// GPS Configuration
 #define GPS_UART_NUM UART_NUM_1
 #define GPS_TX_PIN 23 // ESP32 TX → GPS RX
 #define GPS_RX_PIN 22  // ESP32 RX ← GPS TX
 #define BUF_SIZE 1024
 
-/* --- User configurable pins / settings --- */
-/* Set these to match your wiring */
+// LoRa Configuration
 #define LORA_UART_NUM           UART_NUM_0   // UART used to talk to LoRa module
 #define LORA_UART_TX_PIN        5            // ESP TX -> LoRa RX
 #define LORA_UART_RX_PIN        4            // ESP RX <- LoRa TX (optional)
@@ -35,9 +34,15 @@ static const char *TAG = "lora-probe";
 
 
 // -------------------------------------
-// -------------GPS SETUP---------------
+// -----------GPS functions-------------
 // -------------------------------------
 
+/**
+ * @brief Converts NMEA coordinate format (DDDD.MMMM) to decimal degrees
+ * * @param nmea NMEA coordinate string
+ * @param direction Cardinal direction
+ * @return double Decimal degree value
+ */
 // Helper: convert NMEA lat/lon to decimal degrees
 double nmea_to_decimal(const char *nmea, char direction) {
     // Convert String to Float
@@ -53,6 +58,9 @@ double nmea_to_decimal(const char *nmea, char direction) {
     return decimal;
 }
 
+/**
+ * @brief initialises the GPS UART and sets parameters
+ */
 void gps_setup(){
     uart_config_t uart_config_gps = {
         .baud_rate = 9600,
@@ -76,20 +84,26 @@ void gps_setup(){
     const char *set_sentences = "$PMTK314,0,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0*29\r\n"; 
     uart_write_bytes(GPS_UART_NUM, set_sentences, strlen(set_sentences));
 }
-
-const char* read_gps(bool nmea_on){
+/**
+ * @brief Reads data from the GPS UART, parses RMC, and GGA sentences and updates
+ * a static formatted string containing location and satellite count.
+ * @return const char* Pointer to the static location string buffer
+ */
+const char* read_gps(){
+    // Static variables to maintain latest data and buffer calls.
     static char locationStr[64] = "No GPS fix yet\r\n"; 
     static char line[BUF_SIZE];
     static int line_pos = 0;
-    static int satellites_in_use = 0; // <--- NEW: Store satellite count
+    static int satellites_in_use = 0;
     uint8_t data[BUF_SIZE];
 
+    // Read available bytes
     int len = uart_read_bytes(GPS_UART_NUM, data, BUF_SIZE, 500 / portTICK_PERIOD_MS);
 
     if(len > 0) {
         for(int i = 0; i < len; i++) {
             char c = data[i];
-            if(c == '\n') {
+            if(c == '\n') { // End of NMEA Sentence detected
                 line[line_pos] = '\0';
                 
                 // Trim trailing \r (using the previous fix logic)
@@ -97,7 +111,7 @@ const char* read_gps(bool nmea_on){
                     line[line_pos - 1] = '\0';
                 }
                 
-                line_pos = 0;
+                line_pos = 0; // Reset buffer
 
                 // --- GNRMC/GPRMC Parsing (Existing Location Logic) ---
                 if(strncmp(line, "$GNRMC", 6) == 0 || strncmp(line, "$GPRMC", 6) == 0) {
@@ -107,10 +121,10 @@ const char* read_gps(bool nmea_on){
 
                     while(token) {
                         field++;
-                        if(field == 4) lat_str = token;
-                        if(field == 5) lat_dir = token;
-                        if(field == 6) lon_str = token;
-                        if(field == 7) lon_dir = token;
+                        if(field == 4) lat_str = token; // Latitude
+                        if(field == 5) lat_dir = token; // N/S Indicator
+                        if(field == 6) lon_str = token; // Longitude
+                        if(field == 7) lon_dir = token; // W/E Indicator
                         token = strtok(NULL, ",");
                     }
 
@@ -118,14 +132,14 @@ const char* read_gps(bool nmea_on){
                         double latitude = nmea_to_decimal(lat_str, lat_dir[0]);
                         double longitude = nmea_to_decimal(lon_str, lon_dir[0]);
                         
-                        // UPDATE locationStr to include the latest satellite count
+                        // UPDATE locationStr to include latest location and satellite count
                         snprintf(locationStr, sizeof(locationStr), 
                                  "Lat: %.6f, Lon: %.6f, Sats: %d\r\n", 
-                                 latitude, longitude, satellites_in_use); // <--- CHANGE HERE
+                                 latitude, longitude, satellites_in_use);
                     }
                 }
                 
-                // --- NEW: GNGGA/GPGGA Parsing for Satellites ---
+                // --- GNGGA/GPGGA Parsing for Satellites ---
                 else if(strncmp(line, "$GNGGA", 6) == 0 || strncmp(line, "$GPGGA", 6) == 0) {
                     char temp_line[BUF_SIZE];
                     strncpy(temp_line, line, BUF_SIZE); // Use copy for strtok
@@ -142,13 +156,14 @@ const char* read_gps(bool nmea_on){
                     }
 
                     if(sat_count_str && *sat_count_str != '\0') {
-                        satellites_in_use = atoi(sat_count_str); // <--- Store satellite count
+                        satellites_in_use = atoi(sat_count_str); // Update satellite count
                     }
                 }
-                // --- END NEW Parsing ---
+                // --- END Parsing ---
                 
 
             } else if(c != '\r') {
+                // Buffer overflow protection
                 line[line_pos++] = c;
                 if(line_pos >= BUF_SIZE - 1) line_pos = BUF_SIZE - 2;
             }
@@ -159,29 +174,28 @@ const char* read_gps(bool nmea_on){
 }
 
 
-
+// -------------------------------------
+// -------------LoRa Tasks--------------
+// -------------------------------------
 /* --- Sends a sample packet periodically to LoRa --- */
+
+/**
+ * @brief Periodically send the latest GPS data via UART
+ */
 static void periodic_sender_task(void *arg)
 {
+    // Delay between transmissions
     const TickType_t delay = pdMS_TO_TICKS(1000); // 1 seconds
     uint32_t counter = 0;
 
     while (1)
     {
-        // GPS Data as payload.
-        // If NMEA data is needed, make true
-        const char *payload = read_gps(false);
-        //const char *payload = "Hello\r\n";
-        // const char *payload = read_gps(false);
+        // Retrieve latest GPS data
+        const char *payload = read_gps();
         if(payload) {
+            // Queue bytes for transmission
             uart_write_bytes(LORA_UART_NUM, payload, strlen(payload));
         }
-
-        // int len = strlen(payload);
-
-        // Queue bytes to UART FIFO
-        // int written = uart_write_bytes(LORA_UART_NUM, payload, len);
-        // ESP_LOGI(TAG, "Periodic: sent %d bytes to LoRa", written);
 
         // Wait until all bytes are physically transmitted
         esp_err_t err = uart_wait_tx_done(LORA_UART_NUM, pdMS_TO_TICKS(500));
@@ -195,56 +209,9 @@ static void periodic_sender_task(void *arg)
     }
 }
 
-static void lora_probe_task(void *arg)
-{
-    const char *probe = "AT\r\n";
-    uint8_t rxbuf[256];
-    esp_err_t err;
-
-    // 1) send probe and get number queued
-    int w = uart_write_bytes(LORA_UART_NUM, probe, strlen(probe));
-    ESP_LOGI(TAG, "Probe: uart_write_bytes() returned %d (queued to driver/FIFO)", w);
-
-    // 2) wait until TX is done physically (blocks until FIFO+ringbuf emptied or timeout)
-    err = uart_wait_tx_done(LORA_UART_NUM, pdMS_TO_TICKS(500)); // 500 ms
-    if (err == ESP_OK) {
-        ESP_LOGI(TAG, "uart_wait_tx_done: TX finished (data physically transmitted)");
-    } else if (err == ESP_ERR_TIMEOUT) {
-        ESP_LOGW(TAG, "uart_wait_tx_done: TIMEOUT waiting for TX to finish");
-    } else {
-        ESP_LOGW(TAG, "uart_wait_tx_done: err=%d", err);
-    }
-
-    // 3) show how much free space is in the tx buffer now (diagnostic)
-    size_t free_sz = 0;
-    if (uart_get_tx_buffer_free_size(LORA_UART_NUM, &free_sz) == ESP_OK) {
-        ESP_LOGI(TAG, "uart tx buffer free size: %u", (unsigned)free_sz);
-    }
-
-    // 4) allow the module some time to respond
-    vTaskDelay(pdMS_TO_TICKS(200));
-
-    // 5) attempt to read anything module might have sent back
-    int r = uart_read_bytes(LORA_UART_NUM, rxbuf, sizeof(rxbuf)-1, pdMS_TO_TICKS(500));
-    if (r > 0) {
-        rxbuf[r] = '\0';
-        ESP_LOGI(TAG, "LoRa -> ESP (%d bytes): %s", r, (char*)rxbuf);
-    } else {
-        ESP_LOGI(TAG, "No response from module (read r=%d)", r);
-    }
-
-    // 6) Try sending a short payload and wait similarly
-    const char *payload = "TEST\r\n";
-    w = uart_write_bytes(LORA_UART_NUM, payload, strlen(payload));
-    ESP_LOGI(TAG, "Payload: uart_write_bytes() returned %d", w);
-
-    err = uart_wait_tx_done(LORA_UART_NUM, pdMS_TO_TICKS(500));
-    ESP_LOGI(TAG, "After payload, uart_wait_tx_done returned %d", err);
-
-    vTaskDelete(NULL);
-}
-
-
+/**
+ * Main Function
+ */
 void app_main(void)
 {
     /* --- Configure LoRa UART (UART1) --- */
@@ -257,7 +224,9 @@ void app_main(void)
         .source_clk = UART_SCLK_DEFAULT,
     };
 
+    // Disable all ESP-IDF Logging to prevent interference with UART_0
     esp_log_level_set("*", ESP_LOG_NONE);
+    
     // Set up GPS Configs
     gps_setup();
 
